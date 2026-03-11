@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tyler Grant Setlist Archive</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=Source+Sans+3:wght@300;400;600&display=swap" rel="stylesheet" />
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #1a1510; color: #e8dcc8; font-family: 'Georgia', serif; }
+    ::selection { background: #c4a87a; color: #1a1510; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #231e16; }
+    ::-webkit-scrollbar-thumb { background: #4a3f30; border-radius: 3px; }
+    input::placeholder { color: #6a5d4a; }
+    select { appearance: none; -webkit-appearance: none; }
+    button { font-family: inherit; }
+    #root { min-height: 100vh; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    const e = React.createElement;
+    const { useState, useEffect, useMemo } = React;
+
+    const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRQc_uKMYT1tYRmtbGandbcT8zrIXyuJrPui68WLsTp6Xfv2uOHmMeq_CnapwomQo3-VeWy3nrPWNY5/pub?gid=1300103133&single=true&output=csv";
+
+    const TEMPO_COLORS = {
+      Slow: { bg: "#2d4a3e", text: "#a8d5ba", border: "#4a7c5c" },
+      Mid: { bg: "#4a3a2d", text: "#d4b896", border: "#7c6244" },
+      Fast: { bg: "#4a2d2d", text: "#d4a096", border: "#7c4444" },
+      "All-In-One": { bg: "#3a3a4a", text: "#b0b0d4", border: "#5a5a7c" },
+    };
+
+    const KEY_COLORS = {
+      G: "#4a7c5c", A: "#7c6244", B: "#7c4444", C: "#5c6a7c",
+      D: "#6a5c7c", E: "#7c7044", F: "#447c7c", Bb: "#8a6a5a",
+      Cm: "#5a7a6a", Dm: "#6a5a7a", Em: "#5a6a5a", Am: "#7a6a4a",
+      Eb: "#6a7a5a", Gm: "#5a6a7a",
+    };
+
+    function parseCSVData(csvText) {
+      var result = Papa.parse(csvText, { header: true, skipEmptyLines: true });
+      return result.data.map(function(row) {
+        return {
+          date: row["Date"] || "",
+          tempo: row["Tempo"] || "",
+          songOrder: parseInt(row["Song Order"]) || 0,
+          songName: row["Song Name"] || "",
+          key: row["Key"] || "",
+          normalizedName: row["Normalized Name"] || row["Song Name"] || "",
+        };
+      }).filter(function(r) { return r.songName && r.tempo; });
+    }
+
+    function formatDate(dateStr) {
+      if (!dateStr) return "";
+      var d = dateStr.toString();
+      // Handle ISO date strings from Sheets (2026-02-02)
+      if (d.indexOf("-") > -1 && d.length >= 10) {
+        var parts = d.substring(0, 10).split("-");
+        return parseInt(parts[1]) + "/" + parseInt(parts[2]) + "/" + parts[0];
+      }
+      // Handle MM/DD/YYYY
+      var p = d.split("/");
+      if (p.length === 3) return parseInt(p[0]) + "/" + parseInt(p[1]) + "/" + p[2];
+      return d;
+    }
+
+    function parseDateForSort(dateStr) {
+      var d = dateStr.toString();
+      if (d.indexOf("-") > -1 && d.length >= 10) {
+        return new Date(d.substring(0, 10)).getTime();
+      }
+      var p = d.split("/");
+      if (p.length === 3) {
+        return new Date(parseInt(p[2]), parseInt(p[0]) - 1, parseInt(p[1])).getTime();
+      }
+      return 0;
+    }
+
+    function App() {
+      var _data = useState([]);
+      var data = _data[0], setData = _data[1];
+      var _loading = useState(true);
+      var loading = _loading[0], setLoading = _loading[1];
+      var _error = useState(null);
+      var error = _error[0], setError = _error[1];
+      var _search = useState("");
+      var search = _search[0], setSearch = _search[1];
+      var _tempoFilter = useState("All");
+      var tempoFilter = _tempoFilter[0], setTempoFilter = _tempoFilter[1];
+      var _keyFilter = useState("All");
+      var keyFilter = _keyFilter[0], setKeyFilter = _keyFilter[1];
+      var _activeView = useState("songs");
+      var activeView = _activeView[0], setActiveView = _activeView[1];
+      var _selectedDate = useState(null);
+      var selectedDate = _selectedDate[0], setSelectedDate = _selectedDate[1];
+
+      useEffect(function() {
+        fetch(SHEET_CSV_URL)
+          .then(function(r) { return r.text(); })
+          .then(function(csv) {
+            setData(parseCSVData(csv));
+            setLoading(false);
+          })
+          .catch(function(err) {
+            setError(err.message);
+            setLoading(false);
+          });
+      }, []);
+
+      var stats = useMemo(function() {
+        if (!data.length) return null;
+        var dateSet = {};
+        var songs = {};
+        var keys = {};
+        var tempos = {};
+        var songDates = {};
+        var songTempos = {};
+        var songKeys = {};
+
+        data.forEach(function(row) {
+          var name = row.normalizedName || row.songName;
+          var dk = row.date;
+          dateSet[dk] = true;
+          songs[name] = (songs[name] || 0) + 1;
+          keys[row.key] = (keys[row.key] || 0) + 1;
+          tempos[row.tempo] = (tempos[row.tempo] || 0) + 1;
+          if (!songDates[name]) songDates[name] = {};
+          songDates[name][dk] = true;
+          if (!songTempos[name]) songTempos[name] = {};
+          songTempos[name][row.tempo] = (songTempos[name][row.tempo] || 0) + 1;
+          if (!songKeys[name]) songKeys[name] = {};
+          songKeys[name][row.key] = (songKeys[name][row.key] || 0) + 1;
+        });
+
+        var dates = Object.keys(dateSet);
+        var numSessions = dates.length;
+
+        var sortedSongs = Object.keys(songs).map(function(name) {
+          var keyEntries = Object.entries(songKeys[name]).sort(function(a, b) { return b[1] - a[1]; });
+          return {
+            name: name,
+            count: songs[name],
+            sessions: Object.keys(songDates[name]).length,
+            pct: Math.round(Object.keys(songDates[name]).length / numSessions * 100),
+            tempos: songTempos[name],
+            keys: songKeys[name],
+            primaryKey: keyEntries[0] ? keyEntries[0][0] : "",
+          };
+        }).sort(function(a, b) { return b.count - a.count; });
+
+        var sortedKeys = Object.entries(keys).sort(function(a, b) { return b[1] - a[1]; });
+
+        var sortedDates = dates.sort(function(a, b) {
+          return parseDateForSort(b) - parseDateForSort(a);
+        });
+
+        return {
+          totalSessions: numSessions,
+          totalPlays: data.length,
+          uniqueSongs: Object.keys(songs).length,
+          avgPerSession: Math.round(data.length / numSessions * 10) / 10,
+          songs: sortedSongs,
+          keys: sortedKeys,
+          tempos: tempos,
+          dates: sortedDates,
+        };
+      }, [data]);
+
+      var filteredSongs = useMemo(function() {
+        if (!stats) return [];
+        return stats.songs.filter(function(s) {
+          var matchesSearch = !search || s.name.toLowerCase().indexOf(search.toLowerCase()) > -1;
+          var matchesTempo = tempoFilter === "All" || s.tempos[tempoFilter];
+          var matchesKey = keyFilter === "All" || s.keys[keyFilter];
+          return matchesSearch && matchesTempo && matchesKey;
+        });
+      }, [stats, search, tempoFilter, keyFilter]);
+
+      var sessionData = useMemo(function() {
+        if (!selectedDate) return null;
+        var songs = data.filter(function(d) { return d.date === selectedDate; });
+        var byTempo = {};
+        songs.forEach(function(s) {
+          if (!byTempo[s.tempo]) byTempo[s.tempo] = [];
+          byTempo[s.tempo].push(s);
+        });
+        Object.keys(byTempo).forEach(function(k) {
+          byTempo[k].sort(function(a, b) { return a.songOrder - b.songOrder; });
+        });
+        return byTempo;
+      }, [data, selectedDate]);
+
+      // Loading state
+      if (loading) {
+        return e("div", {
+          style: { minHeight: "100vh", background: "#1a1510", display: "flex", alignItems: "center", justifyContent: "center" }
+        },
+          e("div", { style: { textAlign: "center" } },
+            e("div", { style: { fontSize: 28, color: "#c4a87a", fontFamily: "'Playfair Display', serif", letterSpacing: 2, marginBottom: 12 } }, "Loading setlists..."),
+            e("div", { style: { fontSize: 14, color: "#6a5d4a", fontFamily: "'Source Sans 3', sans-serif" } }, "Tuning up")
+          )
+        );
+      }
+
+      // Error state
+      if (error) {
+        return e("div", {
+          style: { minHeight: "100vh", background: "#1a1510", display: "flex", alignItems: "center", justifyContent: "center" }
+        },
+          e("div", { style: { textAlign: "center", maxWidth: 500, padding: 40 } },
+            e("div", { style: { fontSize: 24, color: "#c4a87a", fontFamily: "'Playfair Display', serif", marginBottom: 16 } }, "Could not load setlist data"),
+            e("div", { style: { fontSize: 14, color: "#6a5d4a", fontFamily: "'Source Sans 3', sans-serif" } }, error)
+          )
+        );
+      }
+
+      // Stat pill helper
+      function statPill(value, label) {
+        return e("span", null,
+          e("strong", { style: { color: "#c4a87a", fontSize: 18, fontFamily: "'Playfair Display', serif" } }, value),
+          " " + label
+        );
+      }
+
+      // Tab button
+      function tabBtn(id, label) {
+        return e("button", {
+          onClick: function() { setActiveView(id); setSelectedDate(null); },
+          style: {
+            padding: "14px 24px", background: "none", border: "none",
+            borderBottom: activeView === id ? "2px solid #c4a87a" : "2px solid transparent",
+            color: activeView === id ? "#c4a87a" : "#6a5d4a",
+            fontFamily: "'Source Sans 3', sans-serif", fontSize: 14, fontWeight: 600,
+            letterSpacing: 0.5, cursor: "pointer", transition: "all 0.2s",
+          }
+        }, label);
+      }
+
+      // Tempo badge
+      function tempoBadge(t, size) {
+        var tc = TEMPO_COLORS[t] || TEMPO_COLORS["All-In-One"];
+        var label = t === "All-In-One" ? "AIO" : (size === "small" ? t.charAt(0) : t);
+        return e("span", {
+          key: t,
+          style: {
+            display: "inline-block", padding: size === "small" ? "2px 6px" : "2px 8px",
+            borderRadius: 3, fontSize: size === "small" ? 10 : 11, fontWeight: 600,
+            background: tc.bg, color: tc.text, letterSpacing: 0.5,
+          }
+        }, label);
+      }
+
+      // Key badge
+      function keyBadge(k) {
+        var c = KEY_COLORS[k] || "#3a3228";
+        return e("span", {
+          style: {
+            display: "inline-block", padding: "2px 8px", borderRadius: 4,
+            fontSize: 12, fontWeight: 600, background: c + "30", color: c,
+            border: "1px solid " + c + "40",
+          }
+        }, k);
+      }
+
+      // Filter button
+      function filterBtn(label, isActive, onClick, tempoKey) {
+        var tc = tempoKey && TEMPO_COLORS[tempoKey];
+        return e("button", {
+          onClick: onClick,
+          style: {
+            padding: "8px 16px",
+            background: isActive ? (tc ? tc.bg : "#3a3228") : "#231e16",
+            border: "1px solid " + (isActive ? (tc ? tc.border : "#5a5040") : "#3a3228"),
+            borderRadius: 6,
+            color: isActive ? (tc ? tc.text : "#e8dcc8") : "#6a5d4a",
+            fontFamily: "'Source Sans 3', sans-serif", fontSize: 13, fontWeight: 600,
+            cursor: "pointer", transition: "all 0.2s",
+          }
+        }, label);
+      }
+
+      // Song row
+      function songRow(song, i) {
+        var tempoEntries = Object.entries(song.tempos);
+        return e("div", {
+          key: song.name,
+          style: {
+            display: "grid", gridTemplateColumns: "1fr 70px 80px 70px 100px",
+            padding: "11px 20px", borderBottom: "1px solid #252018",
+            fontFamily: "'Source Sans 3', sans-serif", fontSize: 14, alignItems: "center",
+            background: i % 2 === 0 ? "transparent" : "#1c1710",
+          }
+        },
+          e("span", { style: { color: "#e8dcc8" } }, song.name),
+          e("span", { style: { textAlign: "center", color: "#c4a87a", fontWeight: 600 } }, song.count),
+          e("span", { style: { textAlign: "center", color: "#8a7d68" } },
+            song.sessions + " ",
+            e("span", { style: { fontSize: 11, opacity: 0.6 } }, "(" + song.pct + "%)")
+          ),
+          e("span", { style: { textAlign: "center" } }, keyBadge(song.primaryKey)),
+          e("span", { style: { textAlign: "center", display: "flex", gap: 3, justifyContent: "center" } },
+            tempoEntries.map(function(entry) { return tempoBadge(entry[0], "small"); })
+          )
+        );
+      }
+
+      // Session card
+      function sessionCard(date) {
+        var songs = data.filter(function(d) { return d.date === date; });
+        var temposInSet = [];
+        var seen = {};
+        songs.forEach(function(s) { if (!seen[s.tempo]) { seen[s.tempo] = true; temposInSet.push(s.tempo); } });
+
+        return e("button", {
+          key: date,
+          onClick: function() { setSelectedDate(date); },
+          style: {
+            padding: 16, background: "#1e1912", border: "1px solid #2e2820",
+            borderRadius: 8, cursor: "pointer", textAlign: "left", transition: "all 0.2s",
+          },
+          onMouseEnter: function(ev) { ev.currentTarget.style.borderColor = "#4a3f30"; ev.currentTarget.style.background = "#241e16"; },
+          onMouseLeave: function(ev) { ev.currentTarget.style.borderColor = "#2e2820"; ev.currentTarget.style.background = "#1e1912"; },
+        },
+          e("div", {
+            style: { fontFamily: "'Playfair Display', serif", fontSize: 16, fontWeight: 700, color: "#c4a87a", marginBottom: 6 }
+          }, formatDate(date)),
+          e("div", {
+            style: { fontFamily: "'Source Sans 3', sans-serif", fontSize: 12, color: "#6a5d4a", marginBottom: 8 }
+          }, songs.length + " songs"),
+          e("div", { style: { display: "flex", gap: 4 } },
+            ["Slow", "Mid", "Fast", "All-In-One"].filter(function(t) { return temposInSet.indexOf(t) > -1; }).map(function(t) {
+              return tempoBadge(t, "normal");
+            })
+          )
+        );
+      }
+
+      // Session detail - tempo column
+      function tempoColumn(tempo, songs) {
+        var tc = TEMPO_COLORS[tempo] || TEMPO_COLORS["All-In-One"];
+        return e("div", {
+          key: tempo,
+          style: { flex: "1 1 280px", background: "#1e1912", border: "1px solid " + tc.border + "40", borderRadius: 8, overflow: "hidden" }
+        },
+          e("div", {
+            style: { padding: "14px 20px", background: tc.bg, borderBottom: "1px solid " + tc.border }
+          },
+            e("span", {
+              style: { fontFamily: "'Playfair Display', serif", fontSize: 18, fontWeight: 700, color: tc.text }
+            }, tempo === "All-In-One" ? "All-In-One Set" : tempo + " Tempo")
+          ),
+          e("div", { style: { padding: "8px 0" } },
+            songs.map(function(s, i) {
+              var kc = KEY_COLORS[s.key] || "#3a3228";
+              return e("div", {
+                key: i,
+                style: {
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "9px 20px", borderBottom: i < songs.length - 1 ? "1px solid #252018" : "none",
+                  fontFamily: "'Source Sans 3', sans-serif", fontSize: 14,
+                }
+              },
+                e("span", { style: { color: "#e8dcc8" } },
+                  e("span", { style: { color: "#4a3f30", fontSize: 12, marginRight: 10, fontWeight: 600 } }, i + 1),
+                  s.normalizedName || s.songName
+                ),
+                e("span", {
+                  style: {
+                    padding: "2px 8px", borderRadius: 4, fontSize: 12, fontWeight: 600,
+                    background: kc + "25", color: kc, flexShrink: 0, marginLeft: 12,
+                  }
+                }, s.key)
+              );
+            })
+          )
+        );
+      }
+
+      // Key card
+      function keyCard(keyName, count) {
+        var pct = Math.round(count / stats.totalPlays * 100);
+        var c = KEY_COLORS[keyName] || "#4a3f30";
+        return e("div", {
+          key: keyName,
+          style: {
+            padding: "16px 20px", background: "#1e1912", border: "1px solid #2e2820",
+            borderRadius: 8, display: "flex", alignItems: "center", gap: 16,
+          }
+        },
+          e("div", {
+            style: {
+              width: 44, height: 44, borderRadius: 8, display: "flex", alignItems: "center",
+              justifyContent: "center", fontFamily: "'Playfair Display', serif", fontSize: 20,
+              fontWeight: 700, background: c + "25", color: c, border: "1px solid " + c + "40",
+            }
+          }, keyName),
+          e("div", null,
+            e("div", { style: { fontFamily: "'Source Sans 3', sans-serif", fontSize: 18, fontWeight: 600, color: "#c4a87a" } }, count),
+            e("div", { style: { fontFamily: "'Source Sans 3', sans-serif", fontSize: 12, color: "#6a5d4a" } }, pct + "% of plays")
+          ),
+          e("div", { style: { flex: 1, height: 6, background: "#2a2318", borderRadius: 3, overflow: "hidden" } },
+            e("div", { style: { width: (pct * 2.8) + "%", height: "100%", background: c, borderRadius: 3 } })
+          )
+        );
+      }
+
+      // Main render
+      return e("div", { style: { minHeight: "100vh", background: "#1a1510", color: "#e8dcc8" } },
+
+        // Header
+        e("header", {
+          style: { padding: "40px 32px 28px", borderBottom: "1px solid #2e2820", background: "linear-gradient(180deg, #221c14 0%, #1a1510 100%)" }
+        },
+          e("div", { style: { maxWidth: 1100, margin: "0 auto" } },
+            e("div", {
+              style: { marginBottom: 4, fontSize: 11, letterSpacing: 4, textTransform: "uppercase", color: "#7a6d58", fontFamily: "'Source Sans 3', sans-serif" }
+            }, "Monday Night Playalong Bluegrass Jam"),
+            e("h1", {
+              style: { fontFamily: "'Playfair Display', serif", fontSize: 42, fontWeight: 900, color: "#c4a87a", letterSpacing: -0.5, lineHeight: 1.1 }
+            }, "Tyler Grant Setlist Archive"),
+            stats && e("div", {
+              style: { display: "flex", gap: 32, marginTop: 20, fontFamily: "'Source Sans 3', sans-serif", fontSize: 13, color: "#8a7d68", flexWrap: "wrap" }
+            },
+              statPill(stats.totalSessions, "sessions"),
+              statPill(stats.uniqueSongs, "unique songs"),
+              statPill(stats.totalPlays, "total plays"),
+              statPill(stats.avgPerSession, "songs/session")
+            )
+          )
+        ),
+
+        // Nav
+        e("nav", {
+          style: { padding: "0 32px", borderBottom: "1px solid #2e2820", background: "#1e1912" }
+        },
+          e("div", { style: { maxWidth: 1100, margin: "0 auto", display: "flex" } },
+            tabBtn("songs", "Song Index"),
+            tabBtn("sessions", "Sessions"),
+            tabBtn("keys", "Keys")
+          )
+        ),
+
+        // Main content
+        e("main", { style: { maxWidth: 1100, margin: "0 auto", padding: "28px 32px" } },
+
+          // SONGS VIEW
+          activeView === "songs" && e("div", null,
+            // Filters
+            e("div", { style: { display: "flex", gap: 12, marginBottom: 24, flexWrap: "wrap", alignItems: "center" } },
+              e("input", {
+                type: "text", placeholder: "Search songs...", value: search,
+                onChange: function(ev) { setSearch(ev.target.value); },
+                style: {
+                  padding: "10px 16px", background: "#231e16", border: "1px solid #3a3228",
+                  borderRadius: 6, color: "#e8dcc8", fontFamily: "'Source Sans 3', sans-serif",
+                  fontSize: 14, width: 260, outline: "none",
+                }
+              }),
+              e("div", { style: { display: "flex", gap: 6 } },
+                ["All", "Slow", "Mid", "Fast"].map(function(t) {
+                  return filterBtn(t, tempoFilter === t, function() { setTempoFilter(t); }, t === "All" ? null : t);
+                })
+              ),
+              e("select", {
+                value: keyFilter,
+                onChange: function(ev) { setKeyFilter(ev.target.value); },
+                style: {
+                  padding: "8px 12px", background: "#231e16", border: "1px solid #3a3228",
+                  borderRadius: 6, color: "#e8dcc8", fontFamily: "'Source Sans 3', sans-serif",
+                  fontSize: 13, outline: "none", cursor: "pointer",
+                }
+              },
+                e("option", { value: "All" }, "All Keys"),
+                stats && stats.keys.map(function(k) { return e("option", { key: k[0], value: k[0] }, k[0]); })
+              ),
+              e("span", {
+                style: { fontFamily: "'Source Sans 3', sans-serif", fontSize: 12, color: "#5a5040", marginLeft: 8 }
+              }, filteredSongs.length + " songs")
+            ),
+            // Table
+            e("div", { style: { background: "#1e1912", border: "1px solid #2e2820", borderRadius: 8, overflow: "hidden" } },
+              e("div", {
+                style: {
+                  display: "grid", gridTemplateColumns: "1fr 70px 80px 70px 100px",
+                  padding: "12px 20px", borderBottom: "1px solid #2e2820",
+                  fontFamily: "'Source Sans 3', sans-serif", fontSize: 11, fontWeight: 600,
+                  letterSpacing: 1, textTransform: "uppercase", color: "#6a5d4a",
+                }
+              },
+                e("span", null, "Song"),
+                e("span", { style: { textAlign: "center" } }, "Plays"),
+                e("span", { style: { textAlign: "center" } }, "Sessions"),
+                e("span", { style: { textAlign: "center" } }, "Key"),
+                e("span", { style: { textAlign: "center" } }, "Tempo")
+              ),
+              e("div", { style: { maxHeight: 520, overflowY: "auto" } },
+                filteredSongs.map(function(song, i) { return songRow(song, i); })
+              )
+            )
+          ),
+
+          // SESSIONS LIST VIEW
+          activeView === "sessions" && !selectedDate && e("div", null,
+            e("div", {
+              style: { fontFamily: "'Source Sans 3', sans-serif", fontSize: 13, color: "#6a5d4a", marginBottom: 16 }
+            }, "Click a session to view the full setlist"),
+            e("div", {
+              style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }
+            },
+              stats && stats.dates.map(function(date) { return sessionCard(date); })
+            )
+          ),
+
+          // SESSION DETAIL VIEW
+          activeView === "sessions" && selectedDate && sessionData && e("div", null,
+            e("button", {
+              onClick: function() { setSelectedDate(null); },
+              style: {
+                padding: "8px 16px", background: "#231e16", border: "1px solid #3a3228",
+                borderRadius: 6, color: "#8a7d68", fontFamily: "'Source Sans 3', sans-serif",
+                fontSize: 13, cursor: "pointer", marginBottom: 20,
+              }
+            }, "\u2190 Back to Sessions"),
+            e("h2", {
+              style: { fontFamily: "'Playfair Display', serif", fontSize: 28, fontWeight: 700, color: "#c4a87a", marginBottom: 24 }
+            }, formatDate(selectedDate)),
+            e("div", { style: { display: "flex", gap: 24, flexWrap: "wrap" } },
+              ["Slow", "Mid", "Fast", "All-In-One"].map(function(tempo) {
+                if (!sessionData[tempo]) return null;
+                return tempoColumn(tempo, sessionData[tempo]);
+              })
+            )
+          ),
+
+          // KEYS VIEW
+          activeView === "keys" && stats && e("div", null,
+            e("div", {
+              style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }
+            },
+              stats.keys.map(function(k) { return keyCard(k[0], k[1]); })
+            )
+          )
+        ),
+
+        // Footer
+        e("footer", {
+          style: {
+            padding: "24px 32px", borderTop: "1px solid #2e2820", textAlign: "center",
+            fontFamily: "'Source Sans 3', sans-serif", fontSize: 12, color: "#4a3f30", marginTop: 40,
+          }
+        }, "Tyler Grant Monday Night Playalong Bluegrass Jam \u00b7 tylergrant.com")
+      );
+    }
+
+    ReactDOM.render(e(App), document.getElementById("root"));
+  </script>
+</body>
+</html>
