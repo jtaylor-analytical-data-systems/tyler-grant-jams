@@ -31,7 +31,7 @@
     var ce = React.createElement;
     var useState = React.useState, useEffect = React.useEffect, useMemo = React.useMemo;
 
-    var SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQaKvBbmkPMQR5Goa2amKqgkj6GU7nAjTE54Akkx6gHoQTGovUV9Ws2t6V53Z-txA/pub?gid=166455135&single=true&output=csv";
+    var SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQrXX76bl_Eq7lT7zDdvQHj37EiVpH37V2TjXG6Lw7BZN8iJQqwT1S8dPJlpHJyEw/pub?gid=278043132&single=true&output=csv";
 
     var LOGO_URL = "https://images.squarespace-cdn.com/content/v1/622983a2dada15102c181d28/5797942b-611d-4e79-a4d6-4e6146857478/TYLER_GRANT_FINAL_WHITE_Electric.png?format=500w";
 
@@ -360,9 +360,9 @@
                     r.link?ce("a",{href:r.link,target:"_blank",rel:"noopener",style:{
                       display:"inline-flex",alignItems:"center",gap:6,color:"#c45a5a",fontSize:11
                     }},ytIcon()," ",(r.timestamp&&r.timestamp!=="0:00:00"&&r.timestamp!=="0:00")?"Watch at "+r.timestamp:"Watch")
-                    :r.setLink?ce("a",{href:r.setLink,target:"_blank",rel:"noopener",title:"Watch the full "+r.tempo+" segment",style:{
+                    :r.setLink?ce("a",{href:r.setLink,target:"_blank",rel:"noopener",title:"Watch the "+r.tempo+" set link",style:{
                       display:"inline-flex",alignItems:"center",gap:6,color:"#7a3a3a",fontSize:11
-                    }},ytIcon()," Segment")
+                    }},ytIcon()," Set link")
                     :ce("span",{style:{color:"#444",fontSize:11,fontStyle:"italic"}},"No link provided")
                   );
                 })
@@ -410,12 +410,12 @@
                 withLink.map(function(x){
                   var tc=TC[x.tempo]||TC["All-In-One"];
                   var label=x.tempo==="All-In-One"?"All-In-One":x.tempo;
-                  if(x.link) return ce("a",{key:x.tempo,href:x.link,target:"_blank",rel:"noopener",title:"Watch the full "+label+" segment",style:{
+                  if(x.link) return ce("a",{key:x.tempo,href:x.link,target:"_blank",rel:"noopener",title:"Watch the "+label+" set link",style:{
                     display:"inline-flex",alignItems:"center",gap:7,padding:"8px 14px",borderRadius:2,
                     background:tc.bg,border:"1px solid "+tc.border,color:tc.text,
                     fontFamily:bodyFont,fontSize:12,fontWeight:600,letterSpacing:1.5,textTransform:"uppercase"
                   }},ytIcon()," ",label);
-                  return ce("span",{key:x.tempo,title:"No video link provided for the "+label+" segment",style:{
+                  return ce("span",{key:x.tempo,title:"No set link provided for the "+label+" set",style:{
                     display:"inline-flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:2,
                     background:"transparent",border:"1px dashed #2a2a2a",color:"#444",
                     fontFamily:bodyFont,fontSize:11,fontWeight:600,letterSpacing:1,textTransform:"uppercase"
@@ -433,10 +433,10 @@
                   ce("div",{style:{padding:"14px 20px",background:tc.bg,borderBottom:"1px solid "+tc.border,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}},
                     ce("span",{style:{fontFamily:bodyFont,fontSize:12,fontWeight:600,color:tc.text,letterSpacing:3,textTransform:"uppercase"}},
                       tempo==="All-In-One"?"All-In-One Set":tempo+" Tempo"),
-                    setLink?ce("a",{href:setLink,target:"_blank",rel:"noopener",title:"Watch the full "+(tempo==="All-In-One"?"All-In-One":tempo)+" segment",style:{
+                    setLink?ce("a",{href:setLink,target:"_blank",rel:"noopener",title:"Watch the "+(tempo==="All-In-One"?"All-In-One":tempo)+" set link",style:{
                       display:"inline-flex",alignItems:"center",gap:6,color:tc.text,fontSize:10,fontWeight:600,letterSpacing:2,textTransform:"uppercase",opacity:.9,flexShrink:0
-                    }},ytIcon()," Watch segment")
-                    :ce("span",{style:{fontSize:9,fontWeight:600,letterSpacing:1.5,textTransform:"uppercase",color:tc.text,opacity:.45,flexShrink:0}},"No segment link")
+                    }},ytIcon()," Set link")
+                    :ce("span",{style:{fontSize:9,fontWeight:600,letterSpacing:1.5,textTransform:"uppercase",color:tc.text,opacity:.45,flexShrink:0}},"No set link")
                   ),
                   ce("div",{style:{padding:"4px 0"}},
                     songs.map(function(s,i){
