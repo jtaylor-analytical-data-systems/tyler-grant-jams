@@ -1,0 +1,719 @@
+/**
+ * Tyler Grant Playalong Jam — Setlist Importer
+ *
+ * Google Apps Script, bound to the setlist Google Sheet.
+ * Reads .docx setlists from a Drive folder and parses them into structured rows,
+ * including the per-segment "Set Link" video URL and, when present, per-song
+ * YouTube deep links. Keeps the Setlists tab idempotent at the session level.
+ *
+ * Runs manually only. There is no time-based trigger, so every run is
+ * interactive and can show confirmation dialogs.
+ *
+ * Song names in the source docs are already clean, so there is no alias or
+ * normalization step. The Normalized Name column is filled with the song name
+ * at import time, matching the cleaned historical rows.
+ *
+ * Setlists columns (16; the public CSV is read by header name):
+ *   A Date              F Key                K BPM               P Set Link
+ *   B Tempo             G Filename           L Guitar Position
+ *   C Start Time (ET)   H Imported At        M Song/Tune
+ *   D Song Order        I Normalized Name    N Waltz
+ *   E Song Name         J Link (YouTube)     O Timestamp
+ *
+ * Setup:
+ *   1. Open the target Google Sheet, then Extensions > Apps Script.
+ *   2. Paste this file in.
+ *   3. Services (+) > add "Drive API" (v2).
+ *   4. Run "First-Time Setup" once (creates the tabs and the 16-column header).
+ *   5. After each new setlist lands in the Drive folder, run "Import New Files".
+ */
+
+// ============================================================
+// CONFIG
+// ============================================================
+var FOLDER_ID = '1BRkRGWJF4nuhoqRXFONcC5u1seErMdeS';
+var DATA_SHEET_NAME = 'Setlists';
+var LOG_SHEET_NAME = 'Processed Files';
+var ERROR_SHEET_NAME = 'Errors';
+
+var DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+var PDF_TAG = 'PDF Import'; // rows from the historical PDF backfill, never touched by docx imports
+
+// Setlists column indices (1-based)
+var COL_DATE = 1;
+var COL_TEMPO = 2;
+var COL_START_TIME = 3;
+var COL_SONG_ORDER = 4;
+var COL_SONG_NAME = 5;
+var COL_KEY = 6;
+var COL_FILENAME = 7;
+var COL_IMPORTED_AT = 8;
+var COL_NORMALIZED = 9;
+var COL_LINK = 10;
+var COL_BPM = 11;
+var COL_GUITAR_POS = 12;
+var COL_SONG_TUNE = 13;
+var COL_WALTZ = 14;
+var COL_TIMESTAMP = 15;
+var COL_SET_LINK = 16;
+var TOTAL_COLS = 16;
+
+var SETLIST_HEADERS = [
+  'Date', 'Tempo', 'Start Time (ET)', 'Song Order', 'Song Name', 'Key',
+  'Filename', 'Imported At', 'Normalized Name', 'Link', 'BPM',
+  'Guitar Position', 'Song/Tune', 'Waltz', 'Timestamp', 'Set Link'
+];
+
+// ============================================================
+// MENU
+// ============================================================
+
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Setlist Importer')
+    .addItem('Import New Files', 'importNewSetlists')
+    .addSeparator()
+    .addItem('Reimport a Single File…', 'reimportSingleFile')
+    .addItem('Reset & Reimport All Docx', 'resetAndReimportDocx')
+    .addSeparator()
+    .addItem('First-Time Setup', 'setupSheet')
+    .addToUi();
+}
+
+// ============================================================
+// SETUP
+// ============================================================
+
+function setupSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var data = ss.getSheetByName(DATA_SHEET_NAME) || ss.insertSheet(DATA_SHEET_NAME);
+  data.getRange(1, 1, 1, SETLIST_HEADERS.length).setValues([SETLIST_HEADERS]);
+  data.getRange('1:1').setFontWeight('bold');
+  data.setFrozenRows(1);
+
+  var log = ss.getSheetByName(LOG_SHEET_NAME);
+  if (!log) {
+    log = ss.insertSheet(LOG_SHEET_NAME);
+    log.appendRow(['Filename', 'File ID', 'Songs Parsed', 'Lines Skipped', 'Processed At']);
+    log.getRange('1:1').setFontWeight('bold');
+    log.setFrozenRows(1);
+  }
+
+  var errors = ss.getSheetByName(ERROR_SHEET_NAME);
+  if (!errors) {
+    errors = ss.insertSheet(ERROR_SHEET_NAME);
+    errors.appendRow(['Timestamp', 'Filename', 'Error Type', 'Detail', 'Line Content']);
+    errors.getRange('1:1').setFontWeight('bold');
+    errors.setFrozenRows(1);
+  }
+
+  SpreadsheetApp.getUi().alert(
+    'Setup complete. The Setlists tab now has 16 columns (Set Link added at column P). ' +
+    'Use "Import New Files" to load setlists.'
+  );
+}
+
+// ============================================================
+// MAIN IMPORT  (manual, interactive)
+// ============================================================
+
+function importNewSetlists() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var dataSheet = ss.getSheetByName(DATA_SHEET_NAME);
+  var logSheet = ss.getSheetByName(LOG_SHEET_NAME);
+  var errorSheet = ss.getSheetByName(ERROR_SHEET_NAME);
+
+  if (!dataSheet || !logSheet || !errorSheet) {
+    ui.alert('Run "First-Time Setup" first.');
+    return;
+  }
+  ensureHeaders_(dataSheet);
+
+  var folder;
+  try {
+    folder = DriveApp.getFolderById(FOLDER_ID);
+  } catch (e) {
+    ui.alert('Cannot open the Drive folder. Check sharing and FOLDER_ID.');
+    return;
+  }
+
+  // 1. Find files the log has not recorded yet.
+  var processed = getProcessedIds_(logSheet);
+  var newFiles = [];
+  var it = folder.getFilesByType(DOCX_MIME);
+  while (it.hasNext()) {
+    var f = it.next();
+    if (!processed[f.getId()]) newFiles.push(f);
+  }
+
+  // 2. Nothing new.
+  if (!newFiles.length) {
+    var lp = getLastProcessed_(logSheet);
+    var msg = 'No new files to process.';
+    if (lp) {
+      msg += '\n\nLast processed: ' + lp.name +
+             (lp.date ? ' (' + lp.date + ')' : '') +
+             (lp.when ? '\non ' + lp.when : '') + '.';
+    }
+    ui.alert('Setlist Importer', msg, ui.ButtonSet.OK);
+    return;
+  }
+
+  // 3. Parse everything in memory so the confirmation can show counts and links.
+  var parsed = [];
+  for (var i = 0; i < newFiles.length; i++) {
+    parsed.push(parseFile_(newFiles[i], errorSheet));
+  }
+
+  // 4. Confirm before writing. Surfaces thin files, missing segments, and link gaps.
+  var existing = getExistingDateRows_(dataSheet);
+  var blocks = [];
+  for (var j = 0; j < parsed.length; j++) {
+    blocks.push(describeParsedFile_(parsed[j], existing));
+  }
+  var confirm = ui.alert(
+    'Import ' + parsed.length + ' file(s)?',
+    blocks.join('\n\n') + '\n\nReview counts, segments, and links, then import.',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) {
+    ui.alert('Cancelled. Nothing was changed.');
+    return;
+  }
+
+  // 5. Write. Clean dates append; existing dates ask before replacing.
+  var added = 0, overwritten = 0, skipped = 0, done = 0;
+  for (var k = 0; k < parsed.length; k++) {
+    var p = parsed[k];
+
+    if (p.error || !p.date || !p.rows.length) {
+      skipped++;
+      continue; // not logged, so it resurfaces next run once fixed
+    }
+
+    if (existing[p.date]) {
+      var ow = ui.alert(
+        'Overwrite session ' + p.date + '?',
+        'Session ' + p.date + ' already exists (' + existing[p.date].length + ' rows).\n' +
+        'Replace it with ' + p.fileName + ' (' + p.rows.length + ' songs)?',
+        ui.ButtonSet.YES_NO
+      );
+      if (ow !== ui.Button.YES) {
+        skipped++;
+        continue; // declined: leave the file unlogged so it can be retried
+      }
+      deleteDateRows_(dataSheet, existing[p.date]);
+      writeRows_(dataSheet, p.rows);
+      overwritten++;
+    } else {
+      writeRows_(dataSheet, p.rows);
+    }
+
+    added += p.rows.length;
+    done++;
+    upsertLog_(logSheet, p.fileName, p.fileId, p.rows.length, p.skipped.length);
+    existing = getExistingDateRows_(dataSheet); // row numbers shift after write
+  }
+
+  ui.alert(
+    'Done',
+    done + ' file(s) processed, ' + added + ' songs added' +
+    (overwritten ? ', ' + overwritten + ' session(s) overwritten' : '') +
+    (skipped ? ', ' + skipped + ' skipped' : '') + '.',
+    ui.ButtonSet.OK
+  );
+}
+
+function describeParsedFile_(p, existing) {
+  if (p.error) return '\u2022 ' + p.fileName + '\n   ERROR: ' + p.error;
+
+  var segs = Object.keys(p.segmentsFound);
+  var setLinks = 0;
+  for (var i = 0; i < segs.length; i++) {
+    if (p.segments[segs[i]]) setLinks++;
+  }
+
+  var line = '\u2022 ' + p.fileName + (p.date ? '  ->  ' + p.date : '') +
+    '\n   ' + p.songCount + ' songs (' + segs.join(', ') + ')';
+
+  if (segs.indexOf('All-In-One') < 0) {
+    var miss = ['Slow', 'Mid', 'Fast'].filter(function (t) { return segs.indexOf(t) < 0; });
+    if (miss.length) line += '   MISSING: ' + miss.join(', ');
+  }
+
+  line += '\n   set links ' + setLinks + '/' + segs.length +
+          '   song links ' + p.linkCount + '/' + p.songCount;
+  line += '\n   ' + (p.date && existing[p.date]
+    ? 'OVERWRITES existing (' + existing[p.date].length + ' rows)'
+    : 'NEW session');
+  return line;
+}
+
+// ============================================================
+// FILE PARSING
+// ============================================================
+
+/**
+ * Converts one .docx to a temporary Google Doc, extracts text plus hyperlink
+ * URLs, parses it, and trashes the temp doc. Returns a parse result with
+ * { fileName, fileId, date, rows, skipped, segments, segmentsFound, songCount,
+ *   linkCount } or { ..., error } on failure.
+ */
+function parseFile_(file, errorSheet) {
+  var fileName = file.getName();
+  var fileId = file.getId();
+  var date = extractDateFromFilename_(fileName);
+
+  if (!date) {
+    if (errorSheet) logError_(errorSheet, fileName, 'FILENAME_FORMAT', 'No MMDDYY date found in filename.', '');
+    return { fileName: fileName, fileId: fileId, date: null, rows: [], skipped: [], error: 'no date in filename' };
+  }
+
+  var tempId = null;
+  try {
+    var blob = file.getBlob();
+    var converted = Drive.Files.insert(
+      { title: '_tmp_setlist_import', mimeType: MimeType.GOOGLE_DOCS },
+      blob,
+      { convert: true }
+    );
+    tempId = converted.id;
+
+    var paragraphs = extractParagraphsWithLinks_(DocumentApp.openById(tempId));
+    var res = parseSetlistDoc_(paragraphs, fileName, date);
+    res.fileName = fileName;
+    res.fileId = fileId;
+    res.date = date;
+
+    if (errorSheet) {
+      for (var s = 0; s < res.skipped.length; s++) {
+        logError_(errorSheet, fileName, 'SKIPPED_LINE', res.skipped[s].reason, res.skipped[s].content);
+      }
+      if (!res.rows.length) {
+        logError_(errorSheet, fileName, 'NO_SONGS_PARSED', 'Document processed but no songs extracted.', '');
+      }
+    }
+    return res;
+
+  } catch (e) {
+    if (errorSheet) logError_(errorSheet, fileName, 'PROCESSING_ERROR', e.message, e.stack || '');
+    return { fileName: fileName, fileId: fileId, date: date, rows: [], skipped: [], error: e.message };
+  } finally {
+    if (tempId) {
+      try { DriveApp.getFileById(tempId).setTrashed(true); } catch (cleanupErr) { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * Walks the document body and returns one entry per paragraph:
+ *   { text: <visible string>, urls: [<hyperlink targets in order>] }
+ * getBody().getText() drops hyperlink URLs, so links are read from the Text
+ * element's link attributes instead.
+ */
+function extractParagraphsWithLinks_(doc) {
+  var body = doc.getBody();
+  var out = [];
+  var n = body.getNumChildren();
+  for (var i = 0; i < n; i++) {
+    var el = body.getChild(i);
+    var type = el.getType();
+    var textEl = null;
+    if (type === DocumentApp.ElementType.PARAGRAPH) {
+      textEl = el.asParagraph().editAsText();
+    } else if (type === DocumentApp.ElementType.LIST_ITEM) {
+      textEl = el.asListItem().editAsText();
+    } else {
+      continue;
+    }
+    var s = textEl.getText();
+    out.push({ text: s == null ? '' : s, urls: collectLinkUrls_(textEl) });
+  }
+  return out;
+}
+
+function collectLinkUrls_(textEl) {
+  var urls = [];
+  if (!textEl.getText()) return urls;
+  var seen = {};
+  var push = function (u) { if (u && !seen[u]) { seen[u] = true; urls.push(u); } };
+  push(textEl.getLinkUrl(0));
+  var idx = textEl.getTextAttributeIndices();
+  for (var i = 0; i < idx.length; i++) push(textEl.getLinkUrl(idx[i]));
+  return urls;
+}
+
+/**
+ * Parses paragraphs into Setlists rows.
+ *
+ * Format going forward:
+ *   "Online Jam MMDDYY"            -> ignored
+ *   "<Slow|Mid|Fast> Tempo|Jam – 7:30 Eastern"  -> section header (sets tempo + time)
+ *   "Set Link: <url>"             -> per-segment video URL (stored on each row of the segment)
+ *   "Song Name – Key"             -> song (no per-song link)
+ *   "Song Name – Key | [12:55](https://…?t=775s)"  -> song with timestamp deep link
+ *
+ * Per-song links are optional. The Set Link is always written to column P for
+ * every row in its segment, so the segment video is available even when no
+ * per-song links exist.
+ */
+function parseSetlistDoc_(paragraphs, fileName, dateFormatted) {
+  var rows = [];
+  var skipped = [];
+  var segments = {};       // tempo -> Set Link URL
+  var segmentsFound = {};  // tempo -> true
+  var now = new Date();
+
+  var tempoPatterns = [
+    { re: /slow\s*(tempo|jam)/i, tempo: 'Slow' },
+    { re: /mid[\s\u2013\u2014-]*(tempo|jam)/i, tempo: 'Mid' },
+    { re: /fast\s*(jam|tempo)/i, tempo: 'Fast' },
+    { re: /all[\s-]*in[\s-]*one\s*set/i, tempo: 'All-In-One' }
+  ];
+  var SONG = /^(.+?)\s*[\u2013\u2014\u2015\u2012-]\s*([A-G][b#]?m?(?:\/[A-G][b#]?m?)?)\s*$/;
+  var MD = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/;
+  var TIME = /(\d{1,2}:\d{2}(?::\d{2})?)/;
+
+  var tempo = '';
+  var startTime = '';
+  var order = 0;
+
+  for (var i = 0; i < paragraphs.length; i++) {
+    var text = (paragraphs[i].text || '').trim();
+    var urls = paragraphs[i].urls || [];
+    if (!text) continue;
+    if (/^on[l]*ine\s*jam/i.test(text)) continue;
+
+    // Tempo header
+    var isHeader = false;
+    for (var p = 0; p < tempoPatterns.length; p++) {
+      if (tempoPatterns[p].re.test(text)) {
+        tempo = tempoPatterns[p].tempo;
+        var tm = text.match(TIME);
+        startTime = tm ? (tm[1] + ' PM ET') : '';
+        order = 0;
+        segmentsFound[tempo] = true;
+        isHeader = true;
+        break;
+      }
+    }
+    if (isHeader) continue;
+
+    // Per-segment Set Link line
+    var sl = text.match(/^set\s*link\s*:\s*(\S+)/i);
+    if (sl) {
+      if (tempo) segments[tempo] = sl[1];
+      continue;
+    }
+
+    if (!tempo) {
+      skipped.push({ content: text, reason: 'Appears before any tempo header.' });
+      continue;
+    }
+
+    // Split the song/key from any trailing timestamp link
+    var core = text;
+    var ts = '';
+    var link = '';
+    var bar = text.indexOf('|');
+    if (bar > -1) {
+      core = text.substring(0, bar).trim();
+      var right = text.substring(bar + 1).trim();
+      var md = right.match(MD);
+      if (md) { ts = md[1].trim(); link = md[2].trim(); }
+      else { var rt = right.match(TIME); if (rt) ts = rt[1]; }
+    }
+
+    // Markdown link sitting inside the core (no pipe)
+    if (!link) {
+      var mc = core.match(MD);
+      if (mc) {
+        if (!ts) ts = mc[1].trim();
+        link = mc[2].trim();
+        core = core.replace(MD, '').replace(/\|/g, '').trim();
+      }
+    }
+
+    // Real Word hyperlink from the doc walk
+    if (!link) link = pickYouTubeLink_(urls);
+
+    // Fall back to the t= offset for the display timestamp
+    if (!ts && link) ts = deriveTimestamp_(link);
+
+    var m = core.match(SONG);
+    if (!m) {
+      skipped.push({ content: text, reason: 'Inside "' + tempo + '" section but no song/key match.' });
+      continue;
+    }
+
+    order++;
+    rows.push([
+      dateFormatted, tempo, startTime, order, m[1].trim(), m[2].trim(),
+      fileName, now, m[1].trim(), link, '', '', '', '', ts, '' // last '' = Set Link, filled below
+    ]);
+  }
+
+  // Collapse the duplication the docx -> Google Doc conversion sometimes produces
+  var seen = {};
+  var deduped = [];
+  for (var d = 0; d < rows.length; d++) {
+    var key = rows[d][0] + '|' + rows[d][1] + '|' + rows[d][3] + '|' + rows[d][4];
+    if (!seen[key]) { seen[key] = true; deduped.push(rows[d]); }
+  }
+
+  // Stamp the segment Set Link onto every row and count per-song links
+  var linkCount = 0;
+  for (var x = 0; x < deduped.length; x++) {
+    deduped[x][COL_SET_LINK - 1] = segments[deduped[x][COL_TEMPO - 1]] || '';
+    if (deduped[x][COL_LINK - 1]) linkCount++;
+  }
+
+  return {
+    rows: deduped,
+    skipped: skipped,
+    segments: segments,
+    segmentsFound: segmentsFound,
+    songCount: deduped.length,
+    linkCount: linkCount
+  };
+}
+
+function pickYouTubeLink_(urls) {
+  if (!urls || !urls.length) return '';
+  for (var i = 0; i < urls.length; i++) {
+    if (/youtu/i.test(urls[i]) && /[?&]t=/.test(urls[i])) return urls[i];
+  }
+  for (var j = 0; j < urls.length; j++) {
+    if (/youtu/i.test(urls[j])) return urls[j];
+  }
+  return urls[0];
+}
+
+function deriveTimestamp_(link) {
+  var m = link.match(/[?&]t=(\d+)s?/);
+  if (!m) return '';
+  var total = parseInt(m[1], 10);
+  if (isNaN(total)) return '';
+  var h = Math.floor(total / 3600);
+  var mn = Math.floor((total % 3600) / 60);
+  var sc = total % 60;
+  var pad = function (x) { return (x < 10 ? '0' : '') + x; };
+  return h > 0 ? (h + ':' + pad(mn) + ':' + pad(sc)) : (mn + ':' + pad(sc));
+}
+
+function extractDateFromFilename_(fileName) {
+  var m = fileName.match(/(\d{6})/);
+  if (!m) return null;
+  var s = m[1];
+  var mm = parseInt(s.substring(0, 2), 10);
+  var dd = parseInt(s.substring(2, 4), 10);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  return ('0' + mm).slice(-2) + '/' + ('0' + dd).slice(-2) + '/20' + s.substring(4, 6);
+}
+
+// ============================================================
+// SHEET HELPERS
+// ============================================================
+
+function ensureHeaders_(dataSheet) {
+  var n = SETLIST_HEADERS.length;
+  var current = dataSheet.getRange(1, 1, 1, n).getValues()[0];
+  for (var i = 0; i < n; i++) {
+    if ((current[i] || '').toString().trim() !== SETLIST_HEADERS[i]) {
+      dataSheet.getRange(1, 1, 1, n).setValues([SETLIST_HEADERS]);
+      dataSheet.getRange('1:1').setFontWeight('bold');
+      return;
+    }
+  }
+}
+
+function getProcessedIds_(logSheet) {
+  var ids = {};
+  var last = logSheet.getLastRow();
+  if (last < 2) return ids;
+  var vals = logSheet.getRange(2, 2, last - 1, 1).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    var id = (vals[i][0] || '').toString().trim();
+    if (id) ids[id] = true;
+  }
+  return ids;
+}
+
+function getLastProcessed_(logSheet) {
+  var last = logSheet.getLastRow();
+  if (last < 2) return null;
+  var row = logSheet.getRange(last, 1, 1, 5).getValues()[0];
+  var name = (row[0] || '').toString();
+  var when = row[4] instanceof Date
+    ? Utilities.formatDate(row[4], Session.getScriptTimeZone(), 'MMM d, yyyy h:mm a')
+    : (row[4] || '').toString();
+  return { name: name, date: extractDateFromFilename_(name) || '', when: when };
+}
+
+function getExistingDateRows_(dataSheet) {
+  var map = {};
+  var last = dataSheet.getLastRow();
+  if (last < 2) return map;
+  var vals = dataSheet.getRange(2, COL_DATE, last - 1, 1).getValues();
+  for (var i = 0; i < vals.length; i++) {
+    var key = normalizeDateKey_(vals[i][0]);
+    if (!key) continue;
+    if (!map[key]) map[key] = [];
+    map[key].push(i + 2); // sheet row number
+  }
+  return map;
+}
+
+function normalizeDateKey_(v) {
+  if (v instanceof Date) {
+    return ('0' + (v.getMonth() + 1)).slice(-2) + '/' + ('0' + v.getDate()).slice(-2) + '/' + v.getFullYear();
+  }
+  var s = (v == null ? '' : v).toString().trim();
+  var m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (m) {
+    var yr = m[3].length === 2 ? '20' + m[3] : m[3];
+    return ('0' + parseInt(m[1], 10)).slice(-2) + '/' + ('0' + parseInt(m[2], 10)).slice(-2) + '/' + yr;
+  }
+  return s;
+}
+
+function writeRows_(dataSheet, rows) {
+  if (!rows.length) return;
+  dataSheet.getRange(dataSheet.getLastRow() + 1, 1, rows.length, TOTAL_COLS).setValues(rows);
+}
+
+function deleteDateRows_(dataSheet, rowNumbers) {
+  var sorted = rowNumbers.slice().sort(function (a, b) { return b - a; }); // bottom-up
+  for (var i = 0; i < sorted.length; i++) dataSheet.deleteRow(sorted[i]);
+}
+
+function upsertLog_(logSheet, fileName, fileId, songsParsed, linesSkipped) {
+  var vals = [fileName, fileId, songsParsed, linesSkipped, new Date()];
+  var last = logSheet.getLastRow();
+  if (last >= 2) {
+    var ids = logSheet.getRange(2, 2, last - 1, 1).getValues();
+    for (var i = 0; i < ids.length; i++) {
+      if ((ids[i][0] || '').toString().trim() === fileId) {
+        logSheet.getRange(i + 2, 1, 1, 5).setValues([vals]);
+        return;
+      }
+    }
+  }
+  logSheet.appendRow(vals);
+}
+
+function logError_(errorSheet, fileName, errorType, detail, lineContent) {
+  errorSheet.appendRow([new Date(), fileName, errorType, detail, lineContent]);
+}
+
+// ============================================================
+// UTILITIES
+// ============================================================
+
+/**
+ * Re-reads one file by name fragment, even if its Drive ID is already logged.
+ * Use after Tyler edits a setlist in place (the edit keeps the same Drive ID,
+ * so "Import New Files" would not pick it up).
+ */
+function reimportSingleFile() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var dataSheet = ss.getSheetByName(DATA_SHEET_NAME);
+  var logSheet = ss.getSheetByName(LOG_SHEET_NAME);
+  var errorSheet = ss.getSheetByName(ERROR_SHEET_NAME);
+  if (!dataSheet || !logSheet || !errorSheet) { ui.alert('Run "First-Time Setup" first.'); return; }
+  ensureHeaders_(dataSheet);
+
+  var resp = ui.prompt('Reimport a single file', 'Enter part of the filename (for example 061526):', ui.ButtonSet.OK_CANCEL);
+  if (resp.getSelectedButton() !== ui.Button.OK) return;
+  var needle = resp.getResponseText().trim();
+  if (!needle) { ui.alert('No filename entered.'); return; }
+
+  var folder = DriveApp.getFolderById(FOLDER_ID);
+  var it = folder.getFilesByType(DOCX_MIME);
+  var matches = [];
+  while (it.hasNext()) {
+    var f = it.next();
+    if (f.getName().indexOf(needle) > -1) matches.push(f);
+  }
+  if (!matches.length) { ui.alert('No .docx in the folder matches "' + needle + '".'); return; }
+  if (matches.length > 1) {
+    var names = matches.map(function (m) { return '\u2022 ' + m.getName(); }).join('\n');
+    ui.alert('Multiple matches', 'More than one file matches:\n\n' + names + '\n\nUse a more specific fragment.', ui.ButtonSet.OK);
+    return;
+  }
+
+  var res = parseFile_(matches[0], errorSheet);
+  if (res.error || !res.date || !res.rows.length) {
+    ui.alert('Could not parse ' + res.fileName + (res.error ? ': ' + res.error : '.'));
+    return;
+  }
+
+  var existing = getExistingDateRows_(dataSheet);
+  if (existing[res.date]) {
+    var ow = ui.alert(
+      'Overwrite session ' + res.date + '?',
+      res.fileName + ' parsed ' + res.rows.length + ' songs.\n' +
+      'Session ' + res.date + ' already exists (' + existing[res.date].length + ' rows). Replace it?',
+      ui.ButtonSet.YES_NO
+    );
+    if (ow !== ui.Button.YES) { ui.alert('Cancelled.'); return; }
+    deleteDateRows_(dataSheet, existing[res.date]);
+  }
+
+  writeRows_(dataSheet, res.rows);
+  upsertLog_(logSheet, res.fileName, res.fileId, res.rows.length, res.skipped.length);
+  ui.alert('Done', res.fileName + ' reimported (' + res.rows.length + ' songs).', ui.ButtonSet.OK);
+}
+
+/**
+ * Deletes every docx-sourced row (Filename != "PDF Import"), clears the log and
+ * errors, and re-reads all .docx files in the folder. PDF backfill rows survive.
+ * Runs without per-file prompts because the single confirmation covers the batch.
+ */
+function resetAndReimportDocx() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var dataSheet = ss.getSheetByName(DATA_SHEET_NAME);
+  var logSheet = ss.getSheetByName(LOG_SHEET_NAME);
+  var errorSheet = ss.getSheetByName(ERROR_SHEET_NAME);
+  if (!dataSheet || !logSheet || !errorSheet) { ui.alert('Run "First-Time Setup" first.'); return; }
+  ensureHeaders_(dataSheet);
+
+  var confirm = ui.alert(
+    'Reset and reimport all .docx?',
+    'This deletes every row that came from a .docx import and re-reads all .docx files in the folder. ' +
+    'Rows tagged "' + PDF_TAG + '" are kept. Continue?',
+    ui.ButtonSet.YES_NO
+  );
+  if (confirm !== ui.Button.YES) return;
+
+  var last = dataSheet.getLastRow();
+  if (last > 1) {
+    var fn = dataSheet.getRange(2, COL_FILENAME, last - 1, 1).getValues();
+    for (var i = fn.length - 1; i >= 0; i--) {
+      if ((fn[i][0] || '').toString().trim() !== PDF_TAG) dataSheet.deleteRow(i + 2);
+    }
+  }
+  if (logSheet.getLastRow() > 1) {
+    logSheet.getRange(2, 1, logSheet.getLastRow() - 1, logSheet.getLastColumn()).clearContent();
+  }
+  if (errorSheet.getLastRow() > 1) {
+    errorSheet.getRange(2, 1, errorSheet.getLastRow() - 1, errorSheet.getLastColumn()).clearContent();
+  }
+
+  var folder = DriveApp.getFolderById(FOLDER_ID);
+  var it = folder.getFilesByType(DOCX_MIME);
+  var files = 0, added = 0;
+  while (it.hasNext()) {
+    var res = parseFile_(it.next(), errorSheet);
+    if (res.rows && res.rows.length) {
+      writeRows_(dataSheet, res.rows);
+      added += res.rows.length;
+      files++;
+      upsertLog_(logSheet, res.fileName, res.fileId, res.rows.length, res.skipped.length);
+    }
+  }
+  ui.alert('Done', files + ' files reimported, ' + added + ' songs added.', ui.ButtonSet.OK);
+}
