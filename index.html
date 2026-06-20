@@ -363,7 +363,7 @@
                     :r.setLink?ce("a",{href:r.setLink,target:"_blank",rel:"noopener",title:"Watch the full "+r.tempo+" segment",style:{
                       display:"inline-flex",alignItems:"center",gap:6,color:"#7a3a3a",fontSize:11
                     }},ytIcon()," Segment")
-                    :ce("span",{style:{color:"#222"}},"\u2014")
+                    :ce("span",{style:{color:"#444",fontSize:11,fontStyle:"italic"}},"No link provided")
                   );
                 })
               )
@@ -399,7 +399,30 @@
           // ==================== SESSION DETAIL ====================
           view==="sessionDetail"&&selDate&&sessionData&&ce("div",null,
             backBtn("sessions","Sessions"),
-            ce("h2",{style:{fontFamily:headFont,fontSize:28,fontWeight:600,color:"#fff",marginBottom:28}},fmtDate(selDate)),
+            ce("h2",{style:{fontFamily:headFont,fontSize:28,fontWeight:600,color:"#fff",marginBottom:16}},fmtDate(selDate)),
+            (function(){
+              var segs=["Slow","Mid","Fast","All-In-One"].filter(function(t){return sessionData[t]});
+              var withLink=segs.map(function(t){return{tempo:t,link:(sessionData[t].find(function(s){return s.setLink})||{}).setLink||""}});
+              var any=withLink.some(function(x){return x.link});
+              return ce("div",{style:{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginBottom:28,padding:"14px 18px",background:"#080808",border:"1px solid #1a1a1a",borderRadius:2}},
+                ce("span",{style:{fontFamily:bodyFont,fontSize:10,letterSpacing:3,textTransform:"uppercase",color:"#555",marginRight:4}},"Watch this session"),
+                !any&&ce("span",{style:{fontFamily:bodyFont,fontSize:12,color:"#555",fontStyle:"italic"}},"No link provided"),
+                withLink.map(function(x){
+                  var tc=TC[x.tempo]||TC["All-In-One"];
+                  var label=x.tempo==="All-In-One"?"All-In-One":x.tempo;
+                  if(x.link) return ce("a",{key:x.tempo,href:x.link,target:"_blank",rel:"noopener",title:"Watch the full "+label+" segment",style:{
+                    display:"inline-flex",alignItems:"center",gap:7,padding:"8px 14px",borderRadius:2,
+                    background:tc.bg,border:"1px solid "+tc.border,color:tc.text,
+                    fontFamily:bodyFont,fontSize:12,fontWeight:600,letterSpacing:1.5,textTransform:"uppercase"
+                  }},ytIcon()," ",label);
+                  return ce("span",{key:x.tempo,title:"No video link provided for the "+label+" segment",style:{
+                    display:"inline-flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:2,
+                    background:"transparent",border:"1px dashed #2a2a2a",color:"#444",
+                    fontFamily:bodyFont,fontSize:11,fontWeight:600,letterSpacing:1,textTransform:"uppercase"
+                  }},label," \u00b7 no link");
+                })
+              );
+            })(),
             ce("div",{style:{display:"flex",gap:20,flexWrap:"wrap"}},
               ["Slow","Mid","Fast","All-In-One"].map(function(tempo){
                 var songs=sessionData[tempo];
@@ -410,9 +433,10 @@
                   ce("div",{style:{padding:"14px 20px",background:tc.bg,borderBottom:"1px solid "+tc.border,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}},
                     ce("span",{style:{fontFamily:bodyFont,fontSize:12,fontWeight:600,color:tc.text,letterSpacing:3,textTransform:"uppercase"}},
                       tempo==="All-In-One"?"All-In-One Set":tempo+" Tempo"),
-                    setLink&&ce("a",{href:setLink,target:"_blank",rel:"noopener",title:"Watch the full "+(tempo==="All-In-One"?"All-In-One":tempo)+" segment",style:{
+                    setLink?ce("a",{href:setLink,target:"_blank",rel:"noopener",title:"Watch the full "+(tempo==="All-In-One"?"All-In-One":tempo)+" segment",style:{
                       display:"inline-flex",alignItems:"center",gap:6,color:tc.text,fontSize:10,fontWeight:600,letterSpacing:2,textTransform:"uppercase",opacity:.9,flexShrink:0
                     }},ytIcon()," Watch segment")
+                    :ce("span",{style:{fontSize:9,fontWeight:600,letterSpacing:1.5,textTransform:"uppercase",color:tc.text,opacity:.45,flexShrink:0}},"No segment link")
                   ),
                   ce("div",{style:{padding:"4px 0"}},
                     songs.map(function(s,i){
@@ -430,7 +454,8 @@
                         ),
                         ce("span",{style:{display:"flex",alignItems:"center",gap:8,flexShrink:0,marginLeft:8}},
                           ce("span",{style:{padding:"2px 8px",borderRadius:2,fontSize:11,fontWeight:600,color:kc,border:"1px solid "+kc+"44",background:"transparent"}},s.key),
-                          s.link?ce("a",{href:s.link,target:"_blank",rel:"noopener",title:"Watch on YouTube",style:{display:"flex",opacity:.5}},ytIcon()):null
+                          s.link?ce("a",{href:s.link,target:"_blank",rel:"noopener",title:s.timestamp&&s.timestamp!=="0:00:00"&&s.timestamp!=="0:00"?"Watch at "+s.timestamp:"Watch on YouTube",style:{display:"flex",opacity:.5}},ytIcon())
+                          :ce("span",{style:{fontSize:9,letterSpacing:1,textTransform:"uppercase",color:"#333"}},"no link")
                         )
                       );
                     })
