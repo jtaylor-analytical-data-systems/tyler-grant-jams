@@ -30,7 +30,7 @@
   <script>
     var ce = React.createElement;
     var useState = React.useState, useEffect = React.useEffect, useMemo = React.useMemo;
- 
+
     var SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQaKvBbmkPMQR5Goa2amKqgkj6GU7nAjTE54Akkx6gHoQTGovUV9Ws2t6V53Z-txA/pub?gid=166455135&single=true&output=csv";
 
     var LOGO_URL = "https://images.squarespace-cdn.com/content/v1/622983a2dada15102c181d28/5797942b-611d-4e79-a4d6-4e6146857478/TYLER_GRANT_FINAL_WHITE_Electric.png?format=500w";
@@ -89,12 +89,34 @@
 
     function keyBadge(k,size) {
       var c=KC[k]||"#555";
-      return ce("span",{style:{display:"inline-block",padding:size==="lg"?"4px 12px":"2px 8px",borderRadius:2,fontSize:size==="lg"?14:12,fontWeight:600,background:"transparent",color:c,border:"1px solid "+c+"66"}},k);
+      return ce("span",{key:k,style:{display:"inline-block",padding:size==="lg"?"4px 12px":"2px 8px",borderRadius:2,fontSize:size==="lg"?14:12,fontWeight:600,background:"transparent",color:c,border:"1px solid "+c+"66"}},k);
     }
 
     function ytIcon() {
       return ce("svg",{width:14,height:14,viewBox:"0 0 24 24",fill:"#c45a5a",style:{flexShrink:0}},
         ce("path",{d:"M23.5 6.2c-.3-1-1-1.8-2-2.1C19.6 3.5 12 3.5 12 3.5s-7.6 0-9.5.6c-1 .3-1.8 1.1-2 2.1C0 8.1 0 12 0 12s0 3.9.5 5.8c.3 1 1 1.8 2 2.1 1.9.6 9.5.6 9.5.6s7.6 0 9.5-.6c1-.3 1.8-1.1 2-2.1.5-1.9.5-5.8.5-5.8s0-3.9-.5-5.8zM9.5 15.6V8.4l6.3 3.6-6.3 3.6z"}));
+    }
+
+    function aggregateSongs(rows, totalSessions) {
+      var songs={},songDates={},songTempos={},songKeys={},songBpm={},songLinks={};
+      rows.forEach(function(r){
+        var name=r.normalizedName||r.songName;
+        songs[name]=(songs[name]||0)+1;
+        if(!songDates[name])songDates[name]={}; songDates[name][r.date]=true;
+        if(!songTempos[name])songTempos[name]={}; songTempos[name][r.tempo]=(songTempos[name][r.tempo]||0)+1;
+        if(!songKeys[name])songKeys[name]={}; songKeys[name][r.key]=(songKeys[name][r.key]||0)+1;
+        if(r.bpm&&!isNaN(parseInt(r.bpm))){if(!songBpm[name])songBpm[name]=[]; songBpm[name].push(parseInt(r.bpm))}
+        if(r.link||r.setLink){if(!songLinks[name])songLinks[name]=0; songLinks[name]++}
+      });
+      return Object.keys(songs).map(function(name){
+        var ke=Object.entries(songKeys[name]).sort(function(a,b){return b[1]-a[1]});
+        var avgBpm="";
+        if(songBpm[name]&&songBpm[name].length){var s=0;songBpm[name].forEach(function(v){s+=v});avgBpm=Math.round(s/songBpm[name].length)}
+        var sess=Object.keys(songDates[name]).length;
+        return{name:name,count:songs[name],sessions:sess,
+          pct:totalSessions?Math.round(sess/totalSessions*100):0,
+          tempos:songTempos[name],keys:songKeys[name],primaryKey:ke[0]?ke[0][0]:"",avgBpm:avgBpm,hasLinks:!!songLinks[name]};
+      }).sort(function(a,b){return b.count-a.count});
     }
 
     // ========== APP ==========
@@ -109,50 +131,52 @@
       var _v=useState("songs"),view=_v[0],setView=_v[1];
       var _sd=useState(null),selDate=_sd[0],setSelDate=_sd[1];
       var _ss=useState(null),selSong=_ss[0],setSelSong=_ss[1];
+      var _so=useState("name"),sortBy=_so[0],setSortBy=_so[1];
+      var _mb=useState(typeof window!=="undefined"&&window.innerWidth<=640),isMobile=_mb[0],setIsMobile=_mb[1];
 
       useEffect(function(){
-        fetch(SHEET_CSV_URL).then(function(r){return r.text()}).then(function(csv){
+        fetch(SHEET_CSV_URL+"&_cb="+Date.now()).then(function(r){return r.text()}).then(function(csv){
           setData(parseCSV(csv)); setLoading(false);
         }).catch(function(err){setError(err.message); setLoading(false)});
       },[]);
 
+      useEffect(function(){
+        var mq=window.matchMedia("(max-width: 640px)");
+        var on=function(e){setIsMobile(e.matches)};
+        setIsMobile(mq.matches);
+        if(mq.addEventListener) mq.addEventListener("change",on); else mq.addListener(on);
+        return function(){ if(mq.removeEventListener) mq.removeEventListener("change",on); else mq.removeListener(on); };
+      },[]);
+
       var stats = useMemo(function(){
         if(!data.length) return null;
-        var dateSet={},songs={},keys={},tempos={},songDates={},songTempos={},songKeys={},songBpm={},songLinks={};
-        data.forEach(function(r){
-          var name=r.normalizedName||r.songName; var dk=r.date;
-          dateSet[dk]=true; songs[name]=(songs[name]||0)+1; keys[r.key]=(keys[r.key]||0)+1;
-          tempos[r.tempo]=(tempos[r.tempo]||0)+1;
-          if(!songDates[name])songDates[name]={}; songDates[name][dk]=true;
-          if(!songTempos[name])songTempos[name]={}; songTempos[name][r.tempo]=(songTempos[name][r.tempo]||0)+1;
-          if(!songKeys[name])songKeys[name]={}; songKeys[name][r.key]=(songKeys[name][r.key]||0)+1;
-          if(r.bpm&&!isNaN(parseInt(r.bpm))){if(!songBpm[name])songBpm[name]=[]; songBpm[name].push(parseInt(r.bpm))}
-          if(r.link||r.setLink){if(!songLinks[name])songLinks[name]=0; songLinks[name]++}
-        });
+        var dateSet={},keys={},tempos={};
+        data.forEach(function(r){ dateSet[r.date]=true; keys[r.key]=(keys[r.key]||0)+1; tempos[r.tempo]=(tempos[r.tempo]||0)+1; });
         var dates=Object.keys(dateSet); var n=dates.length;
-        var sorted=Object.keys(songs).map(function(name){
-          var ke=Object.entries(songKeys[name]).sort(function(a,b){return b[1]-a[1]});
-          var avgBpm="";
-          if(songBpm[name]&&songBpm[name].length){var s=0;songBpm[name].forEach(function(v){s+=v});avgBpm=Math.round(s/songBpm[name].length)}
-          return{name:name,count:songs[name],sessions:Object.keys(songDates[name]).length,
-            pct:Math.round(Object.keys(songDates[name]).length/n*100),
-            tempos:songTempos[name],keys:songKeys[name],primaryKey:ke[0]?ke[0][0]:"",avgBpm:avgBpm,hasLinks:!!songLinks[name]};
-        }).sort(function(a,b){return b.count-a.count});
+        var sorted=aggregateSongs(data,n);
         var sortedKeys=Object.entries(keys).sort(function(a,b){return b[1]-a[1]});
         var sortedDates=dates.sort(function(a,b){return sortDate(b)-sortDate(a)});
-        return{totalSessions:n,totalPlays:data.length,uniqueSongs:Object.keys(songs).length,
+        return{totalSessions:n,totalPlays:data.length,uniqueSongs:sorted.length,
           avgPerSession:Math.round(data.length/n*10)/10,songs:sorted,keys:sortedKeys,tempos:tempos,dates:sortedDates};
       },[data]);
 
       var filteredSongs = useMemo(function(){
         if(!stats) return [];
-        return stats.songs.filter(function(s){
-          var ms=!search||s.name.toLowerCase().indexOf(search.toLowerCase())>-1;
-          var mt=tempoF==="All"||s.tempos[tempoF];
-          var mk=keyF==="All"||s.keys[keyF];
-          return ms&&mt&&mk;
+        var rows=data.filter(function(r){
+          var mt=tempoF==="All"||r.tempo===tempoF;
+          var mk=keyF==="All"||r.key===keyF;
+          return mt&&mk;
         });
-      },[stats,search,tempoF,keyF]);
+        var aggs=aggregateSongs(rows,stats.totalSessions).filter(function(s){
+          return !search||s.name.toLowerCase().indexOf(search.toLowerCase())>-1;
+        });
+        if(sortBy==="name"){
+          aggs.sort(function(a,b){return a.name.toLowerCase().localeCompare(b.name.toLowerCase())});
+        } else {
+          aggs.sort(function(a,b){return b.count-a.count||a.name.toLowerCase().localeCompare(b.name.toLowerCase())});
+        }
+        return aggs;
+      },[stats,data,search,tempoF,keyF,sortBy]);
 
       var songDetail = useMemo(function(){
         if(!selSong) return null;
@@ -230,12 +254,12 @@
       return ce("div",{style:{minHeight:"100vh",background:"#000",color:"#fff"}},
 
         // SITE HEADER - matches tylergrant.com
-        ce("header",{style:{padding:"24px 32px",borderBottom:"1px solid #1a1a1a"}},
+        ce("header",{style:{padding:isMobile?"16px 16px":"24px 32px",borderBottom:"1px solid #1a1a1a"}},
           ce("div",{style:{maxWidth:1100,margin:"0 auto",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:16}},
             ce("a",{href:"https://www.tylergrant.com/",target:"_blank"},
-              ce("img",{src:LOGO_URL,alt:"Tyler Grant",style:{height:40}})
+              ce("img",{src:LOGO_URL,alt:"Tyler Grant",style:{height:isMobile?32:40}})
             ),
-            ce("nav",{style:{display:"flex",gap:24,alignItems:"center",flexWrap:"wrap"}},
+            ce("nav",{style:{display:"flex",gap:isMobile?14:24,alignItems:"center",flexWrap:"wrap"}},
               siteNavLink("LISTEN","https://www.tylergrant.com/listen"),
               siteNavLink("LIVE","https://www.tylergrant.com/live"),
               siteNavLink("LEARN","https://www.tylergrant.com/learn"),
@@ -246,35 +270,35 @@
         ),
 
         // PAGE HEADER
-        ce("div",{style:{padding:"48px 32px 32px",borderBottom:"1px solid #1a1a1a"}},
+        ce("div",{style:{padding:isMobile?"28px 16px 24px":"48px 32px 32px",borderBottom:"1px solid #1a1a1a"}},
           ce("div",{style:{maxWidth:1100,margin:"0 auto"}},
             ce("div",{style:{fontSize:11,letterSpacing:5,textTransform:"uppercase",color:"#555",fontFamily:bodyFont,marginBottom:12}},"Monday Night Playalong Jam"),
-            ce("h1",{style:{fontFamily:headFont,fontSize:36,fontWeight:700,color:"#fff",letterSpacing:-.5,lineHeight:1.2,marginBottom:20}},"Setlist Archive"),
-            stats&&ce("div",{style:{display:"flex",gap:40,fontFamily:bodyFont,fontSize:12,color:"#666",flexWrap:"wrap",letterSpacing:1}},
-              ce("span",null,ce("span",{style:{color:"#fff",fontSize:20,fontFamily:headFont,fontWeight:600,marginRight:6}},stats.totalSessions),"SESSIONS"),
-              ce("span",null,ce("span",{style:{color:"#fff",fontSize:20,fontFamily:headFont,fontWeight:600,marginRight:6}},stats.uniqueSongs),"SONGS"),
-              ce("span",null,ce("span",{style:{color:"#fff",fontSize:20,fontFamily:headFont,fontWeight:600,marginRight:6}},stats.totalPlays),"PLAYS"),
-              ce("span",null,ce("span",{style:{color:"#fff",fontSize:20,fontFamily:headFont,fontWeight:600,marginRight:6}},stats.avgPerSession),"AVG/SESSION")
+            ce("h1",{style:{fontFamily:headFont,fontSize:isMobile?27:36,fontWeight:700,color:"#fff",letterSpacing:-.5,lineHeight:1.2,marginBottom:isMobile?16:20}},"Setlist Archive"),
+            stats&&ce("div",{style:{display:"flex",gap:isMobile?18:40,fontFamily:bodyFont,fontSize:12,color:"#666",flexWrap:"wrap",letterSpacing:1}},
+              ce("span",null,ce("span",{style:{color:"#fff",fontSize:isMobile?17:20,fontFamily:headFont,fontWeight:600,marginRight:6}},stats.totalSessions),"SESSIONS"),
+              ce("span",null,ce("span",{style:{color:"#fff",fontSize:isMobile?17:20,fontFamily:headFont,fontWeight:600,marginRight:6}},stats.uniqueSongs),"SONGS"),
+              ce("span",null,ce("span",{style:{color:"#fff",fontSize:isMobile?17:20,fontFamily:headFont,fontWeight:600,marginRight:6}},stats.totalPlays),"PLAYS"),
+              ce("span",null,ce("span",{style:{color:"#fff",fontSize:isMobile?17:20,fontFamily:headFont,fontWeight:600,marginRight:6}},stats.avgPerSession),"AVG/SESSION")
             )
           )
         ),
 
         // DASHBOARD NAV
-        ce("div",{style:{padding:"0 32px",borderBottom:"1px solid #1a1a1a"}},
+        ce("div",{style:{padding:isMobile?"0 16px":"0 32px",borderBottom:"1px solid #1a1a1a"}},
           ce("div",{style:{maxWidth:1100,margin:"0 auto",display:"flex"}},
-            tabBtn("songs","Songs"),tabBtn("sessions","Sessions"),tabBtn("keys","Keys")
+            tabBtn("songs","Songs"),tabBtn("sessions","Sessions")
           )
         ),
 
         // MAIN
-        ce("main",{style:{maxWidth:1100,margin:"0 auto",padding:"32px 32px 60px"}},
+        ce("main",{style:{maxWidth:1100,margin:"0 auto",padding:isMobile?"24px 16px 48px":"32px 32px 60px"}},
 
           // ==================== SONG INDEX ====================
           view==="songs"&&ce("div",null,
             ce("div",{style:{display:"flex",gap:12,marginBottom:28,flexWrap:"wrap",alignItems:"center"}},
               ce("input",{type:"text",placeholder:"Search songs...",value:search,
                 onChange:function(e){setSearch(e.target.value)},
-                style:{padding:"10px 16px",background:"#111",border:"1px solid #222",borderRadius:2,color:"#fff",fontFamily:bodyFont,fontSize:13,width:280,outline:"none",letterSpacing:.5}}),
+                style:{padding:"10px 16px",background:"#111",border:"1px solid #222",borderRadius:2,color:"#fff",fontFamily:bodyFont,fontSize:13,width:isMobile?"100%":280,outline:"none",letterSpacing:.5}}),
               ce("div",{style:{display:"flex",gap:6}},
                 ["All","Slow","Mid","Fast"].map(function(t){
                   return filterBtn(t,tempoF===t,function(){setTempoF(t)},t==="All"?null:t);
@@ -289,9 +313,46 @@
               ce("span",{style:{fontFamily:bodyFont,fontSize:11,color:"#444",marginLeft:8,letterSpacing:1}},filteredSongs.length+" SONGS")
             ),
 
-            ce("div",{style:{border:"1px solid #1a1a1a",borderRadius:2,overflow:"hidden"}},
+            isMobile?ce("div",null,
+              ce("div",{style:{display:"flex",gap:8,marginBottom:14}},
+                ["name","plays"].map(function(sb){
+                  var on=sortBy===sb;
+                  return ce("button",{key:sb,onClick:function(){setSortBy(sb)},style:{
+                    flex:1,padding:"10px 0",background:on?"#1a1a1a":"transparent",border:"1px solid "+(on?"#444":"#222"),
+                    borderRadius:2,color:on?"#fff":"#666",fontFamily:bodyFont,fontSize:11,fontWeight:600,letterSpacing:1.5,textTransform:"uppercase",cursor:"pointer"
+                  }},sb==="name"?"A \u2013 Z":"Most played");
+                })
+              ),
+              ce("div",{style:{border:"1px solid #1a1a1a",borderRadius:2,overflow:"hidden"}},
+                filteredSongs.map(function(song,i){
+                  return ce("div",{key:song.name,onClick:function(){goSong(song.name)},style:{
+                    display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,
+                    padding:"12px 16px",borderBottom:i<filteredSongs.length-1?"1px solid #111":"none",
+                    background:i%2===0?"transparent":"#080808",cursor:"pointer"
+                  }},
+                    ce("div",{style:{minWidth:0,flex:1}},
+                      ce("div",{style:{color:"#fff",fontSize:15,fontWeight:300,display:"flex",alignItems:"center",gap:6,marginBottom:6}},
+                        ce("span",{style:{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},song.name),
+                        song.hasLinks&&ce("span",{style:{opacity:.3,flexShrink:0}},ytIcon())
+                      ),
+                      ce("div",{style:{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}},
+                        Object.keys(song.tempos).map(function(t){return tempoBadge(t,"sm")}),
+                        song.primaryKey&&keyBadge(song.primaryKey),
+                        song.avgBpm&&ce("span",{style:{color:"#555",fontSize:11,fontFamily:bodyFont}},song.avgBpm+" bpm"),
+                        ce("span",{style:{color:"#444",fontSize:11,fontFamily:bodyFont}},song.sessions+" sess \u00b7 "+song.pct+"%")
+                      )
+                    ),
+                    ce("div",{style:{textAlign:"right",flexShrink:0}},
+                      ce("div",{style:{color:"#fff",fontSize:18,fontWeight:600,fontFamily:bodyFont}},song.count),
+                      ce("div",{style:{color:"#444",fontSize:9,letterSpacing:1,textTransform:"uppercase"}},"plays")
+                    )
+                  );
+                })
+              )
+            ):ce("div",{style:{border:"1px solid #1a1a1a",borderRadius:2,overflow:"hidden"}},
               ce("div",{style:{display:"grid",gridTemplateColumns:"1fr 55px 75px 55px 55px 85px",padding:"12px 20px",borderBottom:"1px solid #1a1a1a",fontFamily:bodyFont,fontSize:10,fontWeight:600,letterSpacing:2,textTransform:"uppercase",color:"#444"}},
-                ce("span",null,"Song"),ce("span",{style:{textAlign:"center"}},"Plays"),
+                ce("span",{onClick:function(){setSortBy("name")},style:{cursor:"pointer",color:sortBy==="name"?"#fff":"#444",transition:"color 0.2s"}},"Song"+(sortBy==="name"?" \u25B2":"")),
+                ce("span",{onClick:function(){setSortBy("plays")},style:{textAlign:"center",cursor:"pointer",color:sortBy==="plays"?"#fff":"#444",transition:"color 0.2s"}},"Plays"+(sortBy==="plays"?" \u25BC":"")),
                 ce("span",{style:{textAlign:"center"}},"Sessions"),ce("span",{style:{textAlign:"center"}},"Key"),
                 ce("span",{style:{textAlign:"center"}},"BPM"),ce("span",{style:{textAlign:"center"}},"Tempo")
               ),
@@ -337,7 +398,29 @@
               );
             })(),
 
-            ce("div",{style:{border:"1px solid #1a1a1a",borderRadius:2,overflow:"hidden"}},
+            isMobile?ce("div",{style:{border:"1px solid #1a1a1a",borderRadius:2,overflow:"hidden"}},
+              songDetail.map(function(r,i){
+                var meta=[r.songTune,r.waltz].filter(Boolean).join(" / ");
+                return ce("div",{key:i,style:{
+                  padding:"12px 16px",borderBottom:i<songDetail.length-1?"1px solid #111":"none",
+                  background:i%2===0?"transparent":"#080808"
+                }},
+                  ce("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:8}},
+                    ce("span",{onClick:function(){goSession(r.date)},style:{color:"#fff",cursor:"pointer",fontSize:14,fontWeight:400}},fmtDate(r.date)),
+                    r.link?ce("a",{href:r.link,target:"_blank",rel:"noopener",style:{display:"inline-flex",alignItems:"center",gap:5,color:"#c45a5a",fontSize:12,whiteSpace:"nowrap"}},ytIcon()," ",r.timestamp?"Watch at "+r.timestamp:"Watch")
+                    :r.setLink?ce("a",{href:r.setLink,target:"_blank",rel:"noopener",style:{display:"inline-flex",alignItems:"center",gap:5,color:"#7a3a3a",fontSize:12,whiteSpace:"nowrap"}},ytIcon()," Watch")
+                    :ce("span",{style:{color:"#444",fontSize:11,fontStyle:"italic"}},"Link not set")
+                  ),
+                  ce("div",{style:{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}},
+                    tempoBadge(r.tempo,"sm"),
+                    keyBadge(r.key),
+                    r.bpm&&ce("span",{style:{color:"#555",fontSize:11}},r.bpm+" bpm"),
+                    meta&&ce("span",{style:{color:"#444",fontSize:11}},meta),
+                    r.guitarPos&&ce("span",{style:{color:"#444",fontSize:11}},r.guitarPos)
+                  )
+                );
+              })
+            ):ce("div",{style:{border:"1px solid #1a1a1a",borderRadius:2,overflow:"hidden"}},
               ce("div",{style:{display:"grid",gridTemplateColumns:"100px 65px 50px 55px 70px 80px 1fr",padding:"12px 20px",borderBottom:"1px solid #1a1a1a",fontFamily:bodyFont,fontSize:10,fontWeight:600,letterSpacing:2,textTransform:"uppercase",color:"#444"}},
                 ce("span",null,"Date"),ce("span",null,"Tempo"),ce("span",{style:{textAlign:"center"}},"Key"),
                 ce("span",{style:{textAlign:"center"}},"BPM"),ce("span",null,"Type"),
@@ -359,11 +442,11 @@
                     ce("span",{style:{color:"#444",fontSize:11}},r.guitarPos||""),
                     r.link?ce("a",{href:r.link,target:"_blank",rel:"noopener",style:{
                       display:"inline-flex",alignItems:"center",gap:6,color:"#c45a5a",fontSize:11
-                    }},ytIcon()," ",(r.timestamp&&r.timestamp!=="0:00:00"&&r.timestamp!=="0:00")?"Watch at "+r.timestamp:"Watch")
-                    :r.setLink?ce("a",{href:r.setLink,target:"_blank",rel:"noopener",title:"Watch the "+r.tempo+" set link",style:{
+                    }},ytIcon()," ",r.timestamp?"Watch at "+r.timestamp:"Watch")
+                    :r.setLink?ce("a",{href:r.setLink,target:"_blank",rel:"noopener",title:"Watch this set on YouTube",style:{
                       display:"inline-flex",alignItems:"center",gap:6,color:"#7a3a3a",fontSize:11
-                    }},ytIcon()," Set link")
-                    :ce("span",{style:{color:"#444",fontSize:11,fontStyle:"italic"}},"No link provided")
+                    }},ytIcon()," Watch")
+                    :ce("span",{style:{color:"#444",fontSize:11,fontStyle:"italic"}},"Link not set")
                   );
                 })
               )
@@ -404,39 +487,34 @@
               var segs=["Slow","Mid","Fast","All-In-One"].filter(function(t){return sessionData[t]});
               var withLink=segs.map(function(t){return{tempo:t,link:(sessionData[t].find(function(s){return s.setLink})||{}).setLink||""}});
               var any=withLink.some(function(x){return x.link});
-              return ce("div",{style:{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginBottom:28,padding:"14px 18px",background:"#080808",border:"1px solid #1a1a1a",borderRadius:2}},
-                ce("span",{style:{fontFamily:bodyFont,fontSize:10,letterSpacing:3,textTransform:"uppercase",color:"#555",marginRight:4}},"Watch this session"),
-                !any&&ce("span",{style:{fontFamily:bodyFont,fontSize:12,color:"#555",fontStyle:"italic"}},"No link provided"),
+              return ce("div",{style:{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginBottom:28,padding:"16px 18px",background:"#0d0d0d",border:"1px solid #222",borderRadius:2}},
+                ce("span",{style:{display:"inline-flex",alignItems:"center",gap:7,fontFamily:bodyFont,fontSize:12,letterSpacing:1,textTransform:"uppercase",fontWeight:600,color:"#bbb",marginRight:6}},ytIcon()," Click to watch on YouTube"),
+                !any&&ce("span",{style:{fontFamily:bodyFont,fontSize:12,color:"#555",fontStyle:"italic"}},"Link not set"),
                 withLink.map(function(x){
                   var tc=TC[x.tempo]||TC["All-In-One"];
                   var label=x.tempo==="All-In-One"?"All-In-One":x.tempo;
-                  if(x.link) return ce("a",{key:x.tempo,href:x.link,target:"_blank",rel:"noopener",title:"Watch the "+label+" set link",style:{
-                    display:"inline-flex",alignItems:"center",gap:7,padding:"8px 14px",borderRadius:2,
+                  if(x.link) return ce("a",{key:x.tempo,href:x.link,target:"_blank",rel:"noopener",title:"Watch the "+label+" set on YouTube",style:{
+                    display:"inline-flex",alignItems:"center",gap:7,padding:"9px 16px",borderRadius:3,cursor:"pointer",
                     background:tc.bg,border:"1px solid "+tc.border,color:tc.text,
                     fontFamily:bodyFont,fontSize:12,fontWeight:600,letterSpacing:1.5,textTransform:"uppercase"
                   }},ytIcon()," ",label);
-                  return ce("span",{key:x.tempo,title:"No set link provided for the "+label+" set",style:{
-                    display:"inline-flex",alignItems:"center",gap:6,padding:"8px 14px",borderRadius:2,
+                  return ce("span",{key:x.tempo,title:"No link set for the "+label+" set",style:{
+                    display:"inline-flex",alignItems:"center",gap:6,padding:"9px 16px",borderRadius:3,
                     background:"transparent",border:"1px dashed #2a2a2a",color:"#444",
                     fontFamily:bodyFont,fontSize:11,fontWeight:600,letterSpacing:1,textTransform:"uppercase"
-                  }},label," \u00b7 no link");
+                  }},label," \u00b7 Link not set");
                 })
               );
             })(),
-            ce("div",{style:{display:"flex",gap:20,flexWrap:"wrap"}},
+            ce("div",{style:{display:"flex",gap:isMobile?14:20,flexWrap:"wrap"}},
               ["Slow","Mid","Fast","All-In-One"].map(function(tempo){
                 var songs=sessionData[tempo];
                 if(!songs) return null;
                 var tc=TC[tempo]||TC["All-In-One"];
-                var setLink=(songs.find(function(s){return s.setLink})||{}).setLink||"";
                 return ce("div",{key:tempo,style:{flex:"1 1 300px",border:"1px solid "+tc.border,borderRadius:2,overflow:"hidden"}},
-                  ce("div",{style:{padding:"14px 20px",background:tc.bg,borderBottom:"1px solid "+tc.border,display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}},
+                  ce("div",{style:{padding:"14px 20px",background:tc.bg,borderBottom:"1px solid "+tc.border}},
                     ce("span",{style:{fontFamily:bodyFont,fontSize:12,fontWeight:600,color:tc.text,letterSpacing:3,textTransform:"uppercase"}},
-                      tempo==="All-In-One"?"All-In-One Set":tempo+" Tempo"),
-                    setLink?ce("a",{href:setLink,target:"_blank",rel:"noopener",title:"Watch the "+(tempo==="All-In-One"?"All-In-One":tempo)+" set link",style:{
-                      display:"inline-flex",alignItems:"center",gap:6,color:tc.text,fontSize:10,fontWeight:600,letterSpacing:2,textTransform:"uppercase",opacity:.9,flexShrink:0
-                    }},ytIcon()," Set link")
-                    :ce("span",{style:{fontSize:9,fontWeight:600,letterSpacing:1.5,textTransform:"uppercase",color:tc.text,opacity:.45,flexShrink:0}},"No set link")
+                      tempo==="All-In-One"?"All-In-One Set":tempo+" Tempo")
                   ),
                   ce("div",{style:{padding:"4px 0"}},
                     songs.map(function(s,i){
@@ -454,31 +532,12 @@
                         ),
                         ce("span",{style:{display:"flex",alignItems:"center",gap:8,flexShrink:0,marginLeft:8}},
                           ce("span",{style:{padding:"2px 8px",borderRadius:2,fontSize:11,fontWeight:600,color:kc,border:"1px solid "+kc+"44",background:"transparent"}},s.key),
-                          s.link?ce("a",{href:s.link,target:"_blank",rel:"noopener",title:s.timestamp&&s.timestamp!=="0:00:00"&&s.timestamp!=="0:00"?"Watch at "+s.timestamp:"Watch on YouTube",style:{display:"flex",opacity:.5}},ytIcon())
-                          :ce("span",{style:{fontSize:9,letterSpacing:1,textTransform:"uppercase",color:"#333"}},"no link")
+                          s.link?ce("a",{href:s.link,target:"_blank",rel:"noopener",style:{display:"inline-flex",alignItems:"center",gap:5,color:"#c45a5a",fontSize:10,fontWeight:400,whiteSpace:"nowrap"}},ytIcon()," ",s.timestamp?"Watch at "+s.timestamp:"Watch")
+                          :s.setLink?ce("a",{href:s.setLink,target:"_blank",rel:"noopener",title:"Watch this set on YouTube",style:{display:"inline-flex",alignItems:"center",gap:5,color:"#7a3a3a",fontSize:10,fontWeight:400,whiteSpace:"nowrap"}},ytIcon()," Watch")
+                          :ce("span",{style:{fontSize:9,letterSpacing:1,textTransform:"uppercase",color:"#333",whiteSpace:"nowrap"}},"Link not set")
                         )
                       );
                     })
-                  )
-                );
-              })
-            )
-          ),
-
-          // ==================== KEYS VIEW ====================
-          view==="keys"&&stats&&ce("div",null,
-            ce("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))",gap:8}},
-              stats.keys.map(function(k){
-                var pct=Math.round(k[1]/stats.totalPlays*100);
-                var c=KC[k[0]]||"#555";
-                return ce("div",{key:k[0],style:{padding:"16px 20px",background:"#080808",border:"1px solid #1a1a1a",borderRadius:2,display:"flex",alignItems:"center",gap:16}},
-                  ce("div",{style:{width:44,height:44,borderRadius:2,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:headFont,fontSize:20,fontWeight:700,color:c,border:"1px solid "+c+"44"}},k[0]),
-                  ce("div",null,
-                    ce("div",{style:{fontFamily:bodyFont,fontSize:18,fontWeight:600,color:"#fff"}},k[1]),
-                    ce("div",{style:{fontFamily:bodyFont,fontSize:11,color:"#444",letterSpacing:1}},pct+"% OF PLAYS")
-                  ),
-                  ce("div",{style:{flex:1,height:3,background:"#1a1a1a",borderRadius:1,overflow:"hidden"}},
-                    ce("div",{style:{width:(pct*2.8)+"%",height:"100%",background:c,borderRadius:1}})
                   )
                 );
               })
@@ -487,7 +546,7 @@
         ),
 
         // FOOTER - matches tylergrant.com
-        ce("footer",{style:{padding:"40px 32px",borderTop:"1px solid #1a1a1a",textAlign:"center"}},
+        ce("footer",{style:{padding:isMobile?"32px 16px":"40px 32px",borderTop:"1px solid #1a1a1a",textAlign:"center"}},
           ce("div",{style:{maxWidth:1100,margin:"0 auto"}},
             ce("div",{style:{marginBottom:16}},
               ce("img",{src:LOGO_URL,alt:"Tyler Grant",style:{height:30,opacity:.4}})
