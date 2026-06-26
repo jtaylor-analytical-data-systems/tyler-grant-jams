@@ -50,8 +50,11 @@
     };
 
     function parseCSV(csv) {
+      if(/^\s*<(!doctype|html|head|body|table|\?xml)/i.test(csv)) {
+        throw new Error("The data source returned a web page instead of CSV data. The sheet may no longer be published to the web, or the publish link has changed.");
+      }
       var result = Papa.parse(csv, { header: true, skipEmptyLines: true });
-      return result.data.map(function(r) {
+      var rows = result.data.map(function(r) {
         return {
           date:r["Date"]||"", tempo:r["Tempo"]||"",
           songOrder:parseInt(r["Song Order"])||0,
@@ -64,6 +67,13 @@
           setLink:r["Set Link"]||""
         };
       }).filter(function(r){return r.songName&&r.tempo});
+      if(!rows.length) {
+        var hint = (result.errors&&result.errors.length)
+          ? " The file could not be parsed cleanly ("+result.errors.length+" parse "+(result.errors.length===1?"error":"errors")+")."
+          : " No rows with both a song name and a tempo were found, so the published sheet may be pointing at the wrong tab or may be empty.";
+        throw new Error("Loaded the data source but found no usable setlist rows."+hint);
+      }
+      return rows;
     }
 
     function fmtDate(d) {
@@ -135,9 +145,15 @@
       var _mb=useState(typeof window!=="undefined"&&window.innerWidth<=640),isMobile=_mb[0],setIsMobile=_mb[1];
 
       useEffect(function(){
-        fetch(SHEET_CSV_URL+"&_cb="+Date.now()).then(function(r){return r.text()}).then(function(csv){
+        fetch(SHEET_CSV_URL+"&_cb="+Date.now()).then(function(r){
+          if(!r.ok) throw new Error("The setlist data request failed (HTTP "+r.status+(r.statusText?" "+r.statusText:"")+"). The published sheet may be unavailable or the link may have changed.");
+          return r.text();
+        }).then(function(csv){
           setData(parseCSV(csv)); setLoading(false);
-        }).catch(function(err){setError(err.message); setLoading(false)});
+        }).catch(function(err){
+          setError(err&&err.message?err.message:"Could not load the setlist data. Check your connection and reload the page.");
+          setLoading(false);
+        });
       },[]);
 
       useEffect(function(){
@@ -199,10 +215,21 @@
         ce("img",{src:LOGO_URL,alt:"Tyler Grant",style:{height:50,opacity:.6}}),
         ce("div",{style:{fontSize:13,letterSpacing:4,textTransform:"uppercase",color:"#555"}},"Loading setlists..."));
 
-      // Error
-      if(error) return ce("div",{style:{minHeight:"100vh",background:"#000",display:"flex",alignItems:"center",justifyContent:"center",flexDirection:"column",gap:16,padding:40}},
-        ce("img",{src:LOGO_URL,alt:"Tyler Grant",style:{height:50,opacity:.6}}),
-        ce("div",{style:{fontSize:14,color:"#666",textAlign:"center",maxWidth:400}},error));
+      // Error — message anchored at the bottom of the page
+      if(error) {
+        var eFont = "'Josefin Sans', 'Helvetica Neue', Arial, sans-serif";
+        return ce("div",{style:{minHeight:"100vh",background:"#000",display:"flex",flexDirection:"column"}},
+          ce("div",{style:{flex:1,display:"flex",alignItems:"center",justifyContent:"center"}},
+            ce("img",{src:LOGO_URL,alt:"Tyler Grant",style:{height:50,opacity:.35}})
+          ),
+          ce("div",{style:{width:"100%",borderTop:"1px solid #3a1a1a",background:"#0d0606",padding:isMobile?"18px 16px":"22px 32px"}},
+            ce("div",{style:{maxWidth:1100,margin:"0 auto",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}},
+              ce("span",{style:{fontSize:11,letterSpacing:2,textTransform:"uppercase",fontWeight:600,color:"#c45a5a",fontFamily:eFont,flexShrink:0}},"Setlist data error"),
+              ce("span",{style:{fontSize:13,lineHeight:1.5,color:"#9a9a9a",fontFamily:eFont,flex:1,minWidth:200}},error)
+            )
+          )
+        );
+      }
 
       // Nav helpers
       function goSong(name){setSelSong(name);setSelDate(null);setView("songDetail")}
