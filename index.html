@@ -91,6 +91,16 @@
       return 0;
     }
 
+    // Search-key normalizer, applied to both the query and the song name.
+    // The source docs come out of Word, so every apostrophe in the data is the
+    // curly U+2019; a keyboard types the straight U+0027 and indexOf never matched.
+    // Lowercase, drop every apostrophe-like character, collapse whitespace, so
+    // "don't", "don’t" and "dont" all find "Don’t Step Over An Old Love".
+    var APOS_RE=/[\u0027\u2018\u2019\u201A\u201B\u02BC\u02B9\u0060\u00B4\u2032]/g;
+    function searchKey(s) {
+      return (s==null?"":s).toString().toLowerCase().replace(APOS_RE,"").replace(/\s+/g," ").trim();
+    }
+
     function tempoBadge(t,size) {
       var c=TC[t]||TC["All-In-One"];
       var label=t==="All-In-One"?"AIO":(size==="sm"?t.charAt(0):t);
@@ -183,8 +193,9 @@
           var mk=keyF==="All"||r.key===keyF;
           return mt&&mk;
         });
+        var q=searchKey(search);
         var aggs=aggregateSongs(rows,stats.totalSessions).filter(function(s){
-          return !search||s.name.toLowerCase().indexOf(search.toLowerCase())>-1;
+          return !q||searchKey(s.name).indexOf(q)>-1;
         });
         if(sortBy==="name"){
           aggs.sort(function(a,b){return a.name.toLowerCase().localeCompare(b.name.toLowerCase())});
